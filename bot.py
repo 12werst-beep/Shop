@@ -107,30 +107,32 @@ async def fetch_price_and_product(url: str):
                 shop = "Магнит"
                 product_match = re.search(r'product-details-offer__title.*?>(.*?)</span>', html)
                 price_match = re.search(r'(\d+[.,]?\d*)\s*₽', html)
-            # Лента
+            # Лента — РЕАЛЬНЫЙ HTML (2025): <h1 class="product-name">...</h1> и <span class="price">...₽</span>
             elif "lenta.com" in url:
                 shop = "Лента"
-                product_match = re.search(r'product.*?>(.*?)</span>', html)
-                price_match = re.search(r'(\d+[.,]?\d*)\s*₽', html)
+                # Реальный пример: <h1 class="product-name">Шоколад молочный ALPEN GOLD...</h1>
+                product_match = re.search(r'<h1[^>]*class="[^"]*product-name[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
+                # Цена: <span class="price">77,99 ₽</span>
+                price_match = re.search(r'<span[^>]*class="[^"]*price[^"]*"[^>]*>([\d\s,]+)\s*₽', html)
             # Пятерочка
             elif "5ka.ru" in url:
                 shop = "Пятерочка"
-                product_match = re.search(r'<h1.*?>(.*?)</h1>', html)
+                product_match = re.search(r'<h1[^>]*class="[^"]*mainInformation_name[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
                 price_match = re.search(r'content="(\d+[.,]?\d*)"', html)
             # Бристоль
             elif "bristol.ru" in url:
                 shop = "Бристоль"
-                product_match = re.search(r'<h1.*?>(.*?)</h1>', html)
+                product_match = re.search(r'<h1[^>]*itemprop="name"[^>]*class="[^"]*product-page__title[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
                 price_match = re.search(r'(\d+[.,]?\d*)\s*₽', html)
             # Спар
             elif "myspar.ru" in url:
                 shop = "Спар"
-                product_match = re.search(r'<h1.*?>(.*?)</h1>', html)
+                product_match = re.search(r'<h1[^>]*class="[^"]*catalog-element__title[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
                 price_match = re.search(r'(\d+[.,]?\d*)', html)
             # Wildberries
             elif "wildberries.ru" in url:
                 shop = "Wildberries"
-                product_match = re.search(r'productTitle.*?>(.*?)</h1>', html)
+                product_match = re.search(r'<h1[^>]*class="[^"]*productTitle--J2W7I[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
                 price_match = re.search(r'(\d[\d\s]+)\s*₽', html)
             else:
                 return None, None, None
@@ -193,7 +195,7 @@ async def process_link(message: Message, state: FSMContext):
     link = message.text.strip()
     await state.update_data(link=link)
     await state.set_state(SearchStates.waiting_for_threshold)
-    await message.answer("💰 Введите минимальную цену (₽):")
+    await message.answer("💰 Введите минимальную цену, при которой уведомить (₽):")
 
 @dp.message(SearchStates.waiting_for_threshold)
 async def process_threshold(message: Message, state: FSMContext):
@@ -207,7 +209,7 @@ async def process_threshold(message: Message, state: FSMContext):
     link = data["link"]
     shop, product, price = await fetch_price_and_product(link)
     if not price:
-        await message.answer("❌ Не удалось получить цену. Проверь ссылку.")
+        await message.answer("❌ Не удалось получить цену. Проверьте ссылку и попробуйте снова.")
         await state.clear()
         return
 
@@ -215,7 +217,7 @@ async def process_threshold(message: Message, state: FSMContext):
     await message.answer(
         f"✅ Добавлено правило:\n"
         f"<b>{shop}</b> — {product}\n"
-        f"Текущая цена: {price} ₽, уведомить при ≤ {threshold} ₽"
+        f"Текущая цена: {price} ₽, уведомлять при ≤ {threshold} ₽"
     )
     await state.clear()
 
@@ -246,8 +248,8 @@ async def cb_delete_alert(callback: CallbackQuery):
 # ---------- Webhook ----------
 async def handle_webhook(request: web.Request):
     data = await request.json()
-    update = Update.model_validate(data)  # ✅ Правильный способ для aiogram 3.6+
-    await dp.feed_webhook_update(bot, update)  # ✅ Рекомендуемый метод
+    update = Update.model_validate(data)
+    await dp.feed_webhook_update(bot, update)
     return web.Response(text="OK")
 
 # ---------- Main ----------
@@ -276,7 +278,6 @@ async def main():
     await site.start()
     logger.info(f"🚀 Бот запущен на порту {port} через вебхук")
 
-    # Бесконечный цикл — чтобы процесс не завершался
     while True:
         await asyncio.sleep(3600)
 
