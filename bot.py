@@ -5,6 +5,8 @@ from aiohttp import web
 import httpx
 from bs4 import BeautifulSoup
 
+# --- ИМПОРТЫ ДЛЯ AIOMGRAM 3.X ---
+from aiogram.filters import Command  # 🔴 КРИТИЧЕСКИЙ ИМПОРТ, КОТОРЫЙ БЫЛ УБРАН!
 from aiogram import F
 from aiogram.client.bot import Bot, DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -25,11 +27,11 @@ logger = logging.getLogger(__name__)
 
 # Настройки
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL")  # https://shop-rm9r.onrender.com   
+RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL")  # Например: https://shop-rm9r.onrender.com
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
 
-POLL_INTERVAL_SECONDS = 900  # 15 мин
+POLL_INTERVAL_SECONDS = 900  # 15 минут
 RATE_LIMIT_MS = 400
 
 # --- Инициализация бота ---
