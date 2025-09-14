@@ -14,7 +14,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram import Dispatcher
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler
+
 import aiosqlite
 
 # Логирование
@@ -125,7 +126,6 @@ async def parse_product(url):
             soup = BeautifulSoup(html, "lxml")
 
             def clean_price(text):
-                # Удаляем все лишние символы и нормализуем
                 return text.strip().replace("₽", "").replace("\u00A0", "").replace("\u202F", "").replace(",", ".").replace(" ", "")
 
             if "magnit.ru" in url:
@@ -221,7 +221,7 @@ async def delete_alert_callback(query: CallbackQuery):
             await query.message.edit_text("Правило удалено")
     await query.answer()
 
-# --- Фоновая проверка (параллельная, с ограничением) ---
+# --- Фоновая проверка ---
 async def monitor_alerts():
     while True:
         try:
@@ -230,11 +230,9 @@ async def monitor_alerts():
                 all_alerts = await cursor.fetchall()
 
             if not all_alerts:
-                logger.info("Нет активных алертов для проверки.")
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
                 continue
 
-            # Ограничиваем одновременные запросы до 5
             semaphore = asyncio.Semaphore(5)
 
             async def check_single_alert(alert):
@@ -257,12 +255,7 @@ async def monitor_alerts():
                         logger.error(f"Ошибка при проверке {link}: {e}")
 
             tasks = [check_single_alert(a) for a in all_alerts]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Логируем ошибки (если есть)
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    logger.error(f"Ошибка в задаче {all_alerts[i][0]}: {result}")
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as e:
             logger.error(f"Критическая ошибка в мониторинге: {e}")
@@ -277,18 +270,18 @@ async def on_shutdown():
 
 # --- Главная функция ---
 async def main():
-    # === ПРОВЕРКА ОКРУЖЕНИЯ ===
+    # Проверка переменных окружения
     if not BOT_TOKEN:
-        logger.critical("TELEGRAM_BOT_TOKEN не задан!")
+        logger.critical("TELEGRAM_BOT_TOKEN не задан! Установите его в настройках Render.com.")
         raise SystemExit(1)
     if not RENDER_SERVICE_URL:
-        logger.critical("RENDER_SERVICE_URL не задан!")
+        logger.critical("RENDER_SERVICE_URL не задан! Убедитесь, что он указан в формате https://your-app.onrender.com")
         raise SystemExit(1)
 
-    # === ИНИЦИАЛИЗАЦИЯ ===
+    # Инициализация БД
     await init_db()
 
-    # === УСТАНОВКА ВЕБХУКА ===
+    # Установка вебхука
     try:
         await bot.set_webhook(
             url=WEBHOOK_URL,
@@ -300,24 +293,23 @@ async def main():
         logger.error(f"Не удалось установить вебхук: {e}")
         raise SystemExit(1)
 
-    # === ФОНОВЫЙ МОНИТОРИНГ ===
+    # Запуск фонового мониторинга
     asyncio.create_task(monitor_alerts())
 
-    # === СОЗДАНИЕ ВЕБ-ПРИЛОЖЕНИЯ ===
+    # Создание веб-приложения
     app = web.Application()
 
-    # --- Регистрация обработчика вебхука (aiogram v3) ---
+    # Регистрация обработчика вебхука (aiogram v3)
     handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     handler.register(app, path=WEBHOOK_PATH)
 
-    # --- Health-check для Render.com (обязательно!) ---
+    # Health-check для Render.com (обязательно!)
     @app.router.get("/")
     async def health_check(request):
         return web.Response(text="OK", content_type="text/plain")
 
-    # --- ЗАПУСК HTTP-СЕРВЕРА НА ПОРТУ ОТ RENDER ---
-    port = int(os.getenv("PORT", 10000))  # ← ОБЯЗАТЕЛЬНО используем PORT от Render!
-    
+    # ЗАПУСК HTTP-СЕРВЕРА НА ПОРТУ ОТ RENDER
+    port = int(os.getenv("PORT", 10000))  # ← ВАЖНО: используем PORT от Render
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)  # ← Привязываемся к 0.0.0.0 и PORT
@@ -325,16 +317,7 @@ async def main():
 
     logger.info(f"✅ Бот запущен на Render.com! Слушает порт {port}")
 
-    # --- ПОДДЕРЖИВАЕМ ПРОЦЕСС ЖИВЫМ ---
+    # Поддерживаем процесс живым
     while True:
         await asyncio.sleep(3600)
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен вручную.")
-    except Exception as e:
-        logger.critical(f"Фатальная ошибка: {e}")
-
 
