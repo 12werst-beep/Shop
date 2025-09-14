@@ -12,6 +12,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from aiogram.filters.command import Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram import Dispatcher
 import aiosqlite
@@ -249,3 +250,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
