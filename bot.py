@@ -8,7 +8,8 @@ from bs4 import BeautifulSoup
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, ParseMode
+from aiogram.types import Message
+from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -162,3 +163,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
