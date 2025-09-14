@@ -28,7 +28,6 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL", "https://shop-rm9r.onrender.com")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "900"))
 RATE_LIMIT_MS = int(os.getenv("RATE_LIMIT_MS", "400"))
-
 DB_PATH = "alerts.db"
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
@@ -226,7 +225,7 @@ async def cb_delete_alert(callback: CallbackQuery):
 async def handle_webhook(request: web.Request):
     data = await request.json()
     update = Update(**data)
-    await dp.feed_update(update)
+    await dp.process_update(update)  # <--- рабочий метод для aiogram v3+
     return web.Response(text="OK")
 
 # ---------- Main ----------
