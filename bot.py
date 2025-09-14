@@ -34,7 +34,7 @@ WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
 
 # ---------- Инициализация ----------
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 
@@ -268,3 +268,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
