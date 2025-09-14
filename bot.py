@@ -5,7 +5,8 @@ from aiohttp import web
 import httpx
 from bs4 import BeautifulSoup
 
-from aiogram import F, Command  # ← ИСПРАВЛЕНО: добавлен Command!
+from aiogram import F
+from aiogram.filters import Command
 from aiogram.client.bot import Bot, DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
@@ -333,3 +334,4 @@ if __name__ == "__main__":
         logger.info("Бот остановлен вручную.")
     except Exception as e:
         logger.critical(f"Фатальная ошибка: {e}")
+
