@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 from datetime import datetime
@@ -8,7 +9,7 @@ import aiosqlite
 import httpx
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties  # <--- ЭТО
+from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -29,20 +30,20 @@ POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "900"))
 RATE_LIMIT_MS = int(os.getenv("RATE_LIMIT_MS", "400"))
 
 DB_PATH = "alerts.db"
-
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
 
 # ---------- Инициализация ----------
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher()
-
 
 # ---------- FSM ----------
 class SearchStates(StatesGroup):
     waiting_for_link = State()
     waiting_for_threshold = State()
-
 
 # ---------- База данных ----------
 async def init_db():
@@ -62,7 +63,6 @@ async def init_db():
         )
         await db.commit()
 
-
 async def add_alert(user_id, link, shop, product, price, threshold):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -71,24 +71,20 @@ async def add_alert(user_id, link, shop, product, price, threshold):
         )
         await db.commit()
 
-
 async def get_alerts(user_id):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT id, link, shop, product, price, threshold FROM alerts WHERE user_id = ?", (user_id,)) as cur:
             return await cur.fetchall()
-
 
 async def delete_alert(user_id, alert_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM alerts WHERE user_id = ? AND id = ?", (user_id, alert_id))
         await db.commit()
 
-
 async def get_all_alerts():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT id, user_id, link, shop, product, price, threshold FROM alerts") as cur:
             return await cur.fetchall()
-
 
 # ---------- Парсинг сайтов ----------
 async def fetch_price_and_product(url: str):
@@ -135,7 +131,6 @@ async def fetch_price_and_product(url: str):
         logger.error(f"Ошибка при парсинге {url}: {e}")
         return None, None, None
 
-
 # ---------- Фоновый монитор ----------
 async def monitor_alerts():
     while True:
@@ -157,7 +152,6 @@ async def monitor_alerts():
             await asyncio.sleep(RATE_LIMIT_MS / 1000.0)
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-
 # ---------- Команды ----------
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -168,12 +162,10 @@ async def cmd_start(message: Message):
         "/alerts — показать активные правила\n"
     )
 
-
 @dp.message(Command("search"))
 async def cmd_search(message: Message, state: FSMContext):
     await state.set_state(SearchStates.waiting_for_link)
     await message.answer("🔗 Введите ссылку на товар:")
-
 
 @dp.message(SearchStates.waiting_for_link)
 async def process_link(message: Message, state: FSMContext):
@@ -181,7 +173,6 @@ async def process_link(message: Message, state: FSMContext):
     await state.update_data(link=link)
     await state.set_state(SearchStates.waiting_for_threshold)
     await message.answer("💰 Введите минимальную цену (₽):")
-
 
 @dp.message(SearchStates.waiting_for_threshold)
 async def process_threshold(message: Message, state: FSMContext):
@@ -193,7 +184,6 @@ async def process_threshold(message: Message, state: FSMContext):
 
     data = await state.get_data()
     link = data["link"]
-
     shop, product, price = await fetch_price_and_product(link)
     if not price:
         await message.answer("❌ Не удалось получить цену. Проверь ссылку.")
@@ -207,7 +197,6 @@ async def process_threshold(message: Message, state: FSMContext):
         f"Текущая цена: {price} ₽, уведомить при ≤ {threshold} ₽"
     )
     await state.clear()
-
 
 @dp.message(Command("alerts"))
 async def cmd_alerts(message: Message):
@@ -226,7 +215,6 @@ async def cmd_alerts(message: Message):
     markup = InlineKeyboardMarkup(inline_keyboard=kb)
     await message.answer(text, reply_markup=markup)
 
-
 @dp.callback_query(F.data.startswith("del:"))
 async def cb_delete_alert(callback: CallbackQuery):
     alert_id = int(callback.data.split(":")[1])
@@ -234,23 +222,26 @@ async def cb_delete_alert(callback: CallbackQuery):
     await callback.message.edit_text("✅ Правило удалено")
     await callback.answer("Удалено")
 
-
 # ---------- Webhook ----------
-async def on_startup(app):
-    await init_db()
-    asyncio.create_task(monitor_alerts())
-    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-    logger.info(f"Webhook set to {WEBHOOK_URL}")
-
-
-async def on_shutdown(app):
-    await bot.delete_webhook()
-    logger.info("Webhook удалён")
-
+async def handle_webhook(request: web.Request):
+    update = await request.json()
+    await dp.feed_update(update)
+    return web.Response(text="OK")
 
 async def main():
+    await init_db()
+    asyncio.create_task(monitor_alerts())
+
     app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, dp.webhook_handler())
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+    async def on_startup(app):
+        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+        logger.info(f"Webhook set to {WEBHOOK_URL}")
+
+    async def on_shutdown(app):
+        await bot.delete_webhook()
+        logger.info("Webhook удалён")
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
@@ -259,14 +250,10 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000)))
     await site.start()
-
     logger.info("Bot is running via webhook")
+
     while True:
         await asyncio.sleep(3600)
 
-
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
