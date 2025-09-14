@@ -119,54 +119,90 @@ async def process_threshold(message: Message, state: FSMContext):
 # --- Парсинг сайтов ---
 async def parse_product(url):
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        }
+        async with httpx.AsyncClient(timeout=15, headers=headers) as client:
             r = await client.get(url)
             if r.status_code != 200:
+                logger.error(f"HTTP {r.status_code} при запросе к {url}")
                 return None, None, None
+
             html = r.text
             soup = BeautifulSoup(html, "lxml")
 
+            # --- Магнит ---
             if "magnit.ru" in url:
                 shop = "Магнит"
                 prod_tag = soup.select_one("span[data-test-id='v-product-details-offer-name']")
                 price_tag = soup.select_one("span[data-v-67b88f3b]")
                 product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace(" ", "").replace("₽","").replace(",",".")) if price_tag else None
+                price_text = price_tag.text.strip() if price_tag else ""
+                price = float(price_text.replace(" ", "").replace("₽", "").replace(",", ".")) if price_text else None
+
+            # --- Лента ---
             elif "lenta.com" in url:
                 shop = "Лента"
                 prod_tag = soup.select_one("span[_ngcontent-ng-c2436889447]")
-                price_tag = soup.select_one("span.main-price.__accent")
+                price_tag = soup.select_one("span.main-price.title-28-20.__accent")
                 product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().split()[0].replace(",",".")) if price_tag else None
+                price_text = price_tag.text.strip() if price_tag else ""
+                # Оставляем только цифры, точку, запятую и минус
+                cleaned = ''.join(c for c in price_text if c.isdigit() or c in '.-,')
+                price = float(cleaned.replace(',', '.')) if cleaned else None
+
+            # --- Пятерочка ---
             elif "5ka.ru" in url:
                 shop = "Пятерочка"
-                prod_tag = soup.select_one("h1[itemprop='name']")
-                price_tag = soup.select_one("p[itemprop='price']")
+                prod_tag = soup.select_one("h1.chakra-text.mainInformation_name__dpsck.css-0[itemprop='name']")
+                price_tag = soup.select_one("p.chakra-text.priceContainer_price__AY8C_.priceContainer_productPrice__J6NsF[itemprop='price']")
                 product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace(",",".")) if price_tag else None
+                price_text = price_tag.text.strip() if price_tag else ""
+                price = float(price_text.replace(",", ".")) if price_text else None
+
+            # --- Бристоль ---
             elif "bristol.ru" in url:
                 shop = "Бристоль"
-                prod_tag = soup.select_one("h1.product-page__title")
+                prod_tag = soup.select_one("h1.product-page__title[itemprop='name']")
                 price_tag = soup.select_one("span.product-card__price-tag__price")
                 product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace(",",".")) if price_tag else None
+                price_text = price_tag.text.strip() if price_tag else ""
+                price = float(price_text.replace("₽", "").replace(" ", "").replace(",", ".")) if price_text else None
+
+            # --- Спар ---
             elif "myspar.ru" in url:
                 shop = "Спар"
-                prod_tag = soup.select_one("h1.catalog-element__title")
-                price_tag = soup.select_one("span.js-item-price")
+                prod_tag = soup.select_one("h1.catalog-element__title.js-cut-text")
+                price_tag = soup.select_one("span.prices__cur.js-item-price")
                 product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace(",",".")) if price_tag else None
+                price_text = ""
+                # Извлекаем все текстовые узлы внутри span (включая <em>)
+                if price_tag:
+                    price_text = ''.join(price_tag.stripped_strings).replace(' ', '').replace('\u00A0', '').replace('₽', '')
+                price = float(price_text.replace(',', '.')) if price_text else None
+
+            # --- Wildberries ---
             elif "wildberries.ru" in url:
                 shop = "Wildberries"
                 prod_tag = soup.select_one("h1.productTitle--J2W7I")
                 price_tag = soup.select_one("ins.priceBlockFinalPrice--iToZR")
                 product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace("\u00A0","").replace("₽","").replace(",",".")) if price_tag else None
+                price_text = price_tag.text.strip() if price_tag else ""
+                price = float(price_text.replace("\u00A0", "").replace("₽", "").replace(",", ".")) if price_text else None
+
             else:
+                logger.warning(f"Неизвестный домен: {url}")
                 return None, None, None
+
+            # Проверка результата
+            if not product or price is None:
+                logger.warning(f"Не удалось извлечь продукт или цену с {url}. Продукт: {product}, Цена: {price}")
+                return None, None, None
+
             return product, price, shop
+
     except Exception as e:
-        logger.error(f"Ошибка при парсинге {url}: {e}")
+        logger.error(f"Ошибка при парсинге {url}: {e}", exc_info=True)
         return None, None, None
 
 # --- Inline меню для управления ---
@@ -237,7 +273,7 @@ async def main():
     await init_db()
     asyncio.create_task(monitor_alerts())
 
-    # 🔴 ОБЯЗАТЕЛЬНО: УСТАНАВЛИВАЕМ ВЕБХУК!
+    # 🔴 УСТАНАВЛИВАЕМ ВЕБХУК!
     await bot.set_webhook(WEBHOOK_URL)
     logger.info(f"Вебхук установлен: {WEBHOOK_URL}")
 
