@@ -24,12 +24,17 @@ logger = logging.getLogger(__name__)
 
 # ---------- Конфигурация ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL", "https://shop-rm9r.onrender.com")
+RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL", "https://shop-rm9r.onrender.com")  # ❌ УБРАЛ ПРОБЕЛЫ!
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", 900))
 RATE_LIMIT_MS = int(os.getenv("RATE_LIMIT_MS", 400))
-DB_PATH = "alerts.db"
+DB_PATH = "data/alerts.db"  # 📁 Папка для SQLite — создастся автоматически
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
+
+# 🔴 Проверка токена — без него бот не запустится
+if not BOT_TOKEN:
+    logger.critical("❌ TELEGRAM_BOT_TOKEN не установлен! Установите переменную окружения.")
+    raise SystemExit(1)
 
 # ---------- Инициализация ----------
 bot = Bot(
@@ -45,6 +50,7 @@ class SearchStates(StatesGroup):
 
 # ---------- База данных ----------
 async def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)  # 📁 Создаём папку data/
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -86,8 +92,11 @@ async def get_all_alerts():
 
 # ---------- Парсинг сайтов ----------
 async def fetch_price_and_product(url: str):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    }
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
             resp = await client.get(url)
             if resp.status_code == 404:
                 return None, None, None
@@ -137,23 +146,32 @@ async def fetch_price_and_product(url: str):
 # ---------- Фоновый монитор ----------
 async def monitor_alerts():
     while True:
+        start_time = asyncio.get_event_loop().time()
         alerts = await get_all_alerts()
+
         for alert in alerts:
-            alert_id, user_id, link, shop, product, old_price, threshold = alert
-            shop, product, current_price = await fetch_price_and_product(link)
-            if not current_price:
-                continue
-            if current_price <= threshold:
-                try:
-                    await bot.send_message(
-                        user_id,
-                        f"<b>{shop}</b>\n🔥 Цена упала до <b>{current_price} ₽</b>!\n"
-                        f"🛍️ {product}\n🔗 <a href='{link}'>Ссылка</a>"
-                    )
-                except Exception as e:
-                    logger.error(f"Не удалось отправить уведомление: {e}")
+            try:
+                alert_id, user_id, link, shop, product, old_price, threshold = alert
+                shop, product, current_price = await fetch_price_and_product(link)
+                if not current_price:
+                    continue
+                if current_price <= threshold:
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            f"<b>{shop}</b>\n🔥 Цена упала до <b>{current_price} ₽</b>!\n"
+                            f"🛍️ {product}\n🔗 <a href='{link}'>Ссылка</a>"
+                        )
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
+            except Exception as e:
+                logger.error(f"Ошибка при обработке алерта {alert_id} для пользователя {user_id}: {e}")
+
             await asyncio.sleep(RATE_LIMIT_MS / 1000.0)
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+        elapsed = asyncio.get_event_loop().time() - start_time
+        sleep_time = max(0, POLL_INTERVAL_SECONDS - elapsed)
+        await asyncio.sleep(sleep_time)
 
 # ---------- Команды ----------
 @dp.message(Command("start"))
@@ -228,8 +246,8 @@ async def cb_delete_alert(callback: CallbackQuery):
 # ---------- Webhook ----------
 async def handle_webhook(request: web.Request):
     data = await request.json()
-    update = Update(**data)
-    await dp.feed_update(bot, update)  # ✅ рабочий метод для aiogram v3+
+    update = Update.model_validate(data)  # ✅ Правильный способ для aiogram 3.6+
+    await dp.feed_webhook_update(bot, update)  # ✅ Рекомендуемый метод
     return web.Response(text="OK")
 
 # ---------- Main ----------
@@ -242,21 +260,23 @@ async def main():
 
     async def on_startup(app):
         await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-        logger.info(f"Webhook set to {WEBHOOK_URL}")
+        logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
 
     async def on_shutdown(app):
         await bot.delete_webhook()
-        logger.info("Webhook удалён")
+        logger.info("🗑️ Webhook удалён")
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000)))
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info("Bot is running via webhook")
+    logger.info(f"🚀 Бот запущен на порту {port} через вебхук")
 
+    # Бесконечный цикл — чтобы процесс не завершался
     while True:
         await asyncio.sleep(3600)
 
