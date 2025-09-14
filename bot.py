@@ -1,32 +1,38 @@
 import os
-import re
 import asyncio
 import logging
-from aiohttp import web
-import httpx
-from bs4 import BeautifulSoup
-
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
-from aiogram.types import Message
-from aiogram.enums import ParseMode
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
+from aiogram import Dispatcher
+from aiogram.client.bot import Bot, DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.enums import ParseMode
 
-# ----------------- Логирование -----------------
-logging.basicConfig(level=logging.INFO)
+# Логирование
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# ----------------- Настройки -----------------
+# Настройки
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{os.getenv('RENDER_SERVICE_URL')}{WEBHOOK_PATH}"
-POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", 900))
-RATE_LIMIT_MS = int(os.getenv("RATE_LIMIT_MS", 400))
+RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL")  # https://shop-rm9r.onrender.com
+WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher(storage=MemoryStorage())
+# --- Создание бота ---
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(
+        parse_mode=ParseMode.HTML
+    ),
+    session=AiohttpSession()  # обязательно для асинхронных запросов
+)
+
+# --- Создание диспетчера с FSM ---
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
+
 
 # ----------------- FSM -----------------
 class SearchStates(StatesGroup):
@@ -163,4 +169,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
