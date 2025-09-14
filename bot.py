@@ -277,18 +277,18 @@ async def on_shutdown():
 
 # --- Главная функция ---
 async def main():
-    # Проверка обязательных переменных окружения
+    # === ПРОВЕРКА ОКРУЖЕНИЯ ===
     if not BOT_TOKEN:
-        logger.critical("TELEGRAM_BOT_TOKEN не задан! Установите его в настройках Render.com.")
+        logger.critical("TELEGRAM_BOT_TOKEN не задан!")
         raise SystemExit(1)
     if not RENDER_SERVICE_URL:
-        logger.critical("RENDER_SERVICE_URL не задан! Убедитесь, что он указан в формате https://your-app.onrender.com")
+        logger.critical("RENDER_SERVICE_URL не задан!")
         raise SystemExit(1)
 
-    # Инициализация БД
+    # === ИНИЦИАЛИЗАЦИЯ ===
     await init_db()
 
-    # Установка вебхука
+    # === УСТАНОВКА ВЕБХУКА ===
     try:
         await bot.set_webhook(
             url=WEBHOOK_URL,
@@ -300,30 +300,32 @@ async def main():
         logger.error(f"Не удалось установить вебхук: {e}")
         raise SystemExit(1)
 
-    # Запуск фонового мониторинга
+    # === ФОНОВЫЙ МОНИТОРИНГ ===
     asyncio.create_task(monitor_alerts())
 
-    # Создание веб-приложения
+    # === СОЗДАНИЕ ВЕБ-ПРИЛОЖЕНИЯ ===
     app = web.Application()
 
-    # Регистрация обработчика вебхука (aiogram v3)
+    # --- Регистрация обработчика вебхука (aiogram v3) ---
     handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     handler.register(app, path=WEBHOOK_PATH)
 
-    # Health-check для Render.com (обязательно!)
+    # --- Health-check для Render.com (обязательно!) ---
     @app.router.get("/")
     async def health_check(request):
         return web.Response(text="OK", content_type="text/plain")
 
-    # Запуск сервера
+    # --- ЗАПУСК HTTP-СЕРВЕРА НА ПОРТУ ОТ RENDER ---
+    port = int(os.getenv("PORT", 10000))  # ← ОБЯЗАТЕЛЬНО используем PORT от Render!
+    
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000)))
-    await site.start()
+    site = web.TCPSite(runner, "0.0.0.0", port)  # ← Привязываемся к 0.0.0.0 и PORT
+    await site.start()  # ← 💥 ЭТОГО НЕ ХВАТАЛО — БЕЗ ЭТОГО СЕРВЕР НЕ СТАРТУЕТ!
 
-    logger.info("Бот запущен на Render.com!")
+    logger.info(f"✅ Бот запущен на Render.com! Слушает порт {port}")
 
-    # Поддерживаем процесс живым
+    # --- ПОДДЕРЖИВАЕМ ПРОЦЕСС ЖИВЫМ ---
     while True:
         await asyncio.sleep(3600)
 
@@ -334,4 +336,5 @@ if __name__ == "__main__":
         logger.info("Бот остановлен вручную.")
     except Exception as e:
         logger.critical(f"Фатальная ошибка: {e}")
+
 
