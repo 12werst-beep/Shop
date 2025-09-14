@@ -6,12 +6,12 @@ import httpx
 from bs4 import BeautifulSoup
 
 # --- ИМПОРТЫ ДЛЯ AIOMGRAM 3.X ---
-from aiogram.filters import Command  # 🔴 КРИТИЧЕСКИЙ ИМПОРТ, КОТОРЫЙ БЫЛ УБРАН!
+from aiogram.filters import Command
 from aiogram import F
+from aiogram.types import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.client.bot import Bot, DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
-from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -226,17 +226,20 @@ async def monitor_alerts():
                     logger.error(f"Не удалось отправить уведомление: {e}")
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-# --- Webhook для Render ---
+# --- Webhook для Render (aiogram 3.x) ---
 async def handle_webhook(request: web.Request):
     data = await request.json()
-    from aiogram.types import Update
-    update = Update(**data)
-    await dp.process_update(update)
+    update = Update.model_validate(data, context={"bot": bot})
+    await dp.feed_update(bot, update)
     return web.Response()
 
 async def main():
     await init_db()
     asyncio.create_task(monitor_alerts())
+
+    # 🔴 ОБЯЗАТЕЛЬНО: УСТАНАВЛИВАЕМ ВЕБХУК!
+    await bot.set_webhook(WEBHOOK_URL)
+    logger.info(f"Вебхук установлен: {WEBHOOK_URL}")
 
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
