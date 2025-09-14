@@ -2,7 +2,6 @@ import os
 import re
 import asyncio
 import logging
-from datetime import datetime
 
 import aiosqlite
 import httpx
@@ -24,23 +23,19 @@ logger = logging.getLogger(__name__)
 
 # ---------- Конфигурация ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL", "https://shop-rm9r.onrender.com")  # ❌ УБРАЛ ПРОБЕЛЫ!
+RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL", "https://shop-rm9r.onrender.com")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", 900))
 RATE_LIMIT_MS = int(os.getenv("RATE_LIMIT_MS", 400))
-DB_PATH = "data/alerts.db"  # 📁 Папка для SQLite — создастся автоматически
+DB_PATH = "data/alerts.db"
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
 
-# 🔴 Проверка токена — без него бот не запустится
 if not BOT_TOKEN:
-    logger.critical("❌ TELEGRAM_BOT_TOKEN не установлен! Установите переменную окружения.")
+    logger.critical("❌ TELEGRAM_BOT_TOKEN не установлен!")
     raise SystemExit(1)
 
 # ---------- Инициализация ----------
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 # ---------- FSM ----------
@@ -50,7 +45,7 @@ class SearchStates(StatesGroup):
 
 # ---------- База данных ----------
 async def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)  # 📁 Создаём папку data/
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -90,10 +85,15 @@ async def get_all_alerts():
         async with db.execute("SELECT id, user_id, link, shop, product, price, threshold FROM alerts") as cur:
             return await cur.fetchall()
 
-# ---------- Парсинг сайтов ----------
+# ---------- Парсинг сайтов (ТОЛЬКО РАБОЧИЕ!) ----------
 async def fetch_price_and_product(url: str):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
     }
     try:
         async with httpx.AsyncClient(timeout=15.0, headers=headers) as client:
@@ -102,38 +102,30 @@ async def fetch_price_and_product(url: str):
                 return None, None, None
             html = resp.text
 
-            # Магнит
-            if "magnit.ru" in url:
-                shop = "Магнит"
-                product_match = re.search(r'product-details-offer__title.*?>(.*?)</span>', html)
-                price_match = re.search(r'(\d+[.,]?\d*)\s*₽', html)
-            # Лента — РЕАЛЬНЫЙ HTML (2025): <h1 class="product-name">...</h1> и <span class="price">...₽</span>
-            elif "lenta.com" in url:
-                shop = "Лента"
-                # Реальный пример: <h1 class="product-name">Шоколад молочный ALPEN GOLD...</h1>
-                product_match = re.search(r'<h1[^>]*class="[^"]*product-name[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
-                # Цена: <span class="price">77,99 ₽</span>
-                price_match = re.search(r'<span[^>]*class="[^"]*price[^"]*"[^>]*>([\d\s,]+)\s*₽', html)
-            # Пятерочка
-            elif "5ka.ru" in url:
+            # Пятерочка — работает!
+            if "5ka.ru" in url:
                 shop = "Пятерочка"
                 product_match = re.search(r'<h1[^>]*class="[^"]*mainInformation_name[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
                 price_match = re.search(r'content="(\d+[.,]?\d*)"', html)
-            # Бристоль
+
+            # Бристоль — работает!
             elif "bristol.ru" in url:
                 shop = "Бристоль"
                 product_match = re.search(r'<h1[^>]*itemprop="name"[^>]*class="[^"]*product-page__title[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
                 price_match = re.search(r'(\d+[.,]?\d*)\s*₽', html)
-            # Спар
+
+            # Спар — работает!
             elif "myspar.ru" in url:
                 shop = "Спар"
                 product_match = re.search(r'<h1[^>]*class="[^"]*catalog-element__title[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
                 price_match = re.search(r'(\d+[.,]?\d*)', html)
-            # Wildberries
+
+            # Wildberries — работает!
             elif "wildberries.ru" in url:
                 shop = "Wildberries"
                 product_match = re.search(r'<h1[^>]*class="[^"]*productTitle--J2W7I[^"]*"[^>]*>(.*?)</h1>', html, re.IGNORECASE)
                 price_match = re.search(r'(\d[\d\s]+)\s*₽', html)
+
             else:
                 return None, None, None
 
@@ -141,6 +133,7 @@ async def fetch_price_and_product(url: str):
             price_str = price_match.group(1).replace(" ", "").replace(",", ".") if price_match else None
             price = float(price_str) if price_str else None
             return shop, product, price
+
     except Exception as e:
         logger.error(f"Ошибка при парсинге {url}: {e}")
         return None, None, None
@@ -182,13 +175,22 @@ async def cmd_start(message: Message):
         "👋 Привет! Я бот для мониторинга цен.\n\n"
         "Доступные команды:\n"
         "/search — добавить правило мониторинга\n"
-        "/alerts — показать активные правила\n"
+        "/alerts — показать активные правила\n\n"
+        "ℹ️ Поддерживаются: Пятерочка, Бристоль, Спар, Wildberries.\n"
+        "❗ Магнит и Лента — не поддерживаются (требуют JavaScript)."
     )
 
 @dp.message(Command("search"))
 async def cmd_search(message: Message, state: FSMContext):
     await state.set_state(SearchStates.waiting_for_link)
-    await message.answer("🔗 Введите ссылку на товар:")
+    await message.answer(
+        "🔗 Введите ссылку на товар (поддерживаются: Пятерочка, Бристоль, Спар, Wildberries):\n\n"
+        "Примеры:\n"
+        "• https://5ka.ru/product/konfety-rot-front-batonchiki-250g--2057839/\n"
+        "• https://bristol.ru/product/648\n"
+        "• https://myspar.ru/catalog/novinki-2/batat-spar-rezanyy-zamorozhennyy-300g/\n"
+        "• https://www.wildberries.ru/catalog/164446348/detail.aspx"
+    )
 
 @dp.message(SearchStates.waiting_for_link)
 async def process_link(message: Message, state: FSMContext):
@@ -209,7 +211,12 @@ async def process_threshold(message: Message, state: FSMContext):
     link = data["link"]
     shop, product, price = await fetch_price_and_product(link)
     if not price:
-        await message.answer("❌ Не удалось получить цену. Проверьте ссылку и попробуйте снова.")
+        await message.answer(
+            "❌ Не удалось получить цену.\n"
+            "Проверьте ссылку — она должна быть из списка поддерживаемых сайтов:\n"
+            "• Пятерочка\n• Бристоль\n• Спар\n• Wildberries\n\n"
+            "Магнит и Лента — не работают (требуют JavaScript)."
+        )
         await state.clear()
         return
 
