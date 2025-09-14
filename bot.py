@@ -5,7 +5,7 @@ from aiohttp import web
 import httpx
 from bs4 import BeautifulSoup
 
-# --- ИМПОРТЫ ДЛЯ AIOMGRAM 3.X ---
+# --- ИМПОРТЫ AIOMGRAM 3.X ---
 from aiogram.filters import Command
 from aiogram import F
 from aiogram.types import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
@@ -70,7 +70,7 @@ async def init_db():
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
-        "<b>Привет!</b>\nЯ могу следить за ценами на товары.\n\n"
+        "<b>Привет!</b>\nЯ могу следить за ценами на товары в <i>Магните</i>.\n\n"
         "Доступные команды:\n"
         "/search - добавить товар для отслеживания\n"
         "/alerts - показать активные правила\n"
@@ -79,13 +79,21 @@ async def cmd_start(message: Message):
 
 @dp.message(Command("search"))
 async def cmd_search(message: Message, state: FSMContext):
-    await message.answer("Введите ссылку для отслеживания товара:")
+    await message.answer(
+        "📩 Отправьте ссылку на товар в <b>Магните</b>:\n"
+        "Пример: <code>https://magnit.ru/promo-product/2158136-ikra-lososevaia-zernistaia-90-g?shopCode=743774</code>"
+    )
     await state.set_state(SearchStates.waiting_for_link)
 
 @dp.message(SearchStates.waiting_for_link)
 async def process_link(message: Message, state: FSMContext):
-    await state.update_data(link=message.text)
-    await message.answer("Введите минимальную цену, при которой присылать уведомление:")
+    link = message.text.strip()
+    if "magnit.ru" not in link:
+        await message.answer("❌ Ссылка должна быть с сайта magnit.ru. Попробуйте снова:")
+        return
+
+    await state.update_data(link=link)
+    await message.answer("Введите минимальную цену, при которой присылать уведомление (в рублях):")
     await state.set_state(SearchStates.waiting_for_threshold)
 
 @dp.message(SearchStates.waiting_for_threshold)
@@ -95,13 +103,13 @@ async def process_threshold(message: Message, state: FSMContext):
     try:
         threshold = float(message.text.replace(",", "."))
     except ValueError:
-        await message.answer("Некорректное значение цены, попробуйте снова:")
+        await message.answer("❗ Некорректное значение цены. Введите число, например: <b>250</b> или <b>250.99</b>")
         return
 
     # Парсим товар
     product, price, shop = await parse_product(link)
     if product is None:
-        await message.answer("Не удалось получить информацию о товаре.")
+        await message.answer("❌ Не удалось получить информацию о товаре. Проверьте ссылку и попробуйте ещё раз.")
         await state.clear()
         return
 
@@ -116,12 +124,23 @@ async def process_threshold(message: Message, state: FSMContext):
     await message.answer(f"✅ Добавлено:\n<b>{product}</b>\nТекущая цена: {price} ₽\nПорог: {threshold} ₽")
     await state.clear()
 
-# --- Парсинг сайтов ---
+# --- Парсинг Магнита ---
 async def parse_product(url):
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
         }
+
         async with httpx.AsyncClient(timeout=15, headers=headers) as client:
             r = await client.get(url)
             if r.status_code != 200:
@@ -129,77 +148,21 @@ async def parse_product(url):
                 return None, None, None
 
             html = r.text
-            soup = BeautifulSoup(html, "lxml")
+            soup = BeautifulSoup(html, "html.parser")
 
             # --- Магнит ---
-            if "magnit.ru" in url:
-                shop = "Магнит"
-                prod_tag = soup.select_one("span[data-test-id='v-product-details-offer-name']")
-                price_tag = soup.select_one("span[data-v-67b88f3b]")
-                product = prod_tag.text.strip() if prod_tag else None
-                price_text = price_tag.text.strip() if price_tag else ""
-                price = float(price_text.replace(" ", "").replace("₽", "").replace(",", ".")) if price_text else None
+            prod_tag = soup.select_one("span[data-test-id='v-product-details-offer-name']")
+            price_tag = soup.select_one("span[data-v-67b88f3b]")
 
-            # --- Лента ---
-            elif "lenta.com" in url:
-                shop = "Лента"
-                prod_tag = soup.select_one("span[_ngcontent-ng-c2436889447]")
-                price_tag = soup.select_one("span.main-price.title-28-20.__accent")
-                product = prod_tag.text.strip() if prod_tag else None
-                price_text = price_tag.text.strip() if price_tag else ""
-                # Оставляем только цифры, точку, запятую и минус
-                cleaned = ''.join(c for c in price_text if c.isdigit() or c in '.-,')
-                price = float(cleaned.replace(',', '.')) if cleaned else None
+            product = prod_tag.text.strip() if prod_tag else None
+            price_text = price_tag.text.strip() if price_tag else ""
+            price = float(price_text.replace(" ", "").replace("₽", "").replace(",", ".")) if price_text else None
 
-            # --- Пятерочка ---
-            elif "5ka.ru" in url:
-                shop = "Пятерочка"
-                prod_tag = soup.select_one("h1.chakra-text.mainInformation_name__dpsck.css-0[itemprop='name']")
-                price_tag = soup.select_one("p.chakra-text.priceContainer_price__AY8C_.priceContainer_productPrice__J6NsF[itemprop='price']")
-                product = prod_tag.text.strip() if prod_tag else None
-                price_text = price_tag.text.strip() if price_tag else ""
-                price = float(price_text.replace(",", ".")) if price_text else None
-
-            # --- Бристоль ---
-            elif "bristol.ru" in url:
-                shop = "Бристоль"
-                prod_tag = soup.select_one("h1.product-page__title[itemprop='name']")
-                price_tag = soup.select_one("span.product-card__price-tag__price")
-                product = prod_tag.text.strip() if prod_tag else None
-                price_text = price_tag.text.strip() if price_tag else ""
-                price = float(price_text.replace("₽", "").replace(" ", "").replace(",", ".")) if price_text else None
-
-            # --- Спар ---
-            elif "myspar.ru" in url:
-                shop = "Спар"
-                prod_tag = soup.select_one("h1.catalog-element__title.js-cut-text")
-                price_tag = soup.select_one("span.prices__cur.js-item-price")
-                product = prod_tag.text.strip() if prod_tag else None
-                price_text = ""
-                # Извлекаем все текстовые узлы внутри span (включая <em>)
-                if price_tag:
-                    price_text = ''.join(price_tag.stripped_strings).replace(' ', '').replace('\u00A0', '').replace('₽', '')
-                price = float(price_text.replace(',', '.')) if price_text else None
-
-            # --- Wildberries ---
-            elif "wildberries.ru" in url:
-                shop = "Wildberries"
-                prod_tag = soup.select_one("h1.productTitle--J2W7I")
-                price_tag = soup.select_one("ins.priceBlockFinalPrice--iToZR")
-                product = prod_tag.text.strip() if prod_tag else None
-                price_text = price_tag.text.strip() if price_tag else ""
-                price = float(price_text.replace("\u00A0", "").replace("₽", "").replace(",", ".")) if price_text else None
-
-            else:
-                logger.warning(f"Неизвестный домен: {url}")
-                return None, None, None
-
-            # Проверка результата
             if not product or price is None:
                 logger.warning(f"Не удалось извлечь продукт или цену с {url}. Продукт: {product}, Цена: {price}")
                 return None, None, None
 
-            return product, price, shop
+            return product, price, "Магнит"
 
     except Exception as e:
         logger.error(f"Ошибка при парсинге {url}: {e}", exc_info=True)
