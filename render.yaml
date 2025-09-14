@@ -1,8 +1,8 @@
 services:
   - type: web
-    name: your-bot-name
+    name: shop-rm9r
     runtime: python
-    pythonVersion: 3.12  # ← ВАЖНО!
+    pythonVersion: 3.12
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
@@ -10,4 +10,3 @@ services:
         fromEnv: TELEGRAM_BOT_TOKEN
       - key: RENDER_SERVICE_URL
         fromEnv: RENDER_SERVICE_URL
-
