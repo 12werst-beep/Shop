@@ -1,54 +1,43 @@
 import os
 import asyncio
 import logging
-from aiohttp import web
-import httpx
-from bs4 import BeautifulSoup
+from datetime import datetime
+from dateutil.parser import isoparse
 
-from aiogram import F
-from aiogram.client.bot import Bot, DefaultBotProperties
-from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.enums import ParseMode
-from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.filters.command import Command
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram import Dispatcher
 import aiosqlite
+import httpx
+from aiohttp import web
 
-# Логирование
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+from aiogram import Bot, Dispatcher
+from aiogram.types import Message, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.filters.command import Command
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Настройки
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL")  # https://shop-rm9r.onrender.com
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
-
-POLL_INTERVAL_SECONDS = 900  # 15 мин
+POLL_INTERVAL_SECONDS = 900
 RATE_LIMIT_MS = 400
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = f"https://{os.getenv('RENDER_SERVICE_URL')}{WEBHOOK_PATH}"  # Render URL
 
-# --- Инициализация бота ---
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    session=AiohttpSession(),
-)
+bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# --- FSM ---
-class SearchStates(StatesGroup):
-    waiting_for_link = State()
-    waiting_for_threshold = State()
 
-# --- База данных ---
+# ---------- FSM для пошагового ввода ----------
+class SearchStates(StatesGroup):
+    link = State()
+    threshold = State()
+
+
+# ---------- База данных ----------
 DB_FILE = "alerts.db"
+
 
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
@@ -65,189 +54,158 @@ async def init_db():
         """)
         await db.commit()
 
-# --- Хэндлеры ---
+
+# ---------- Вспомогательные функции ----------
+async def get_price_and_product(link: str):
+    """Парсинг цены и названия товара по ссылке"""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(link, timeout=15)
+            if resp.status_code == 404:
+                return None, None
+            html = resp.text
+
+            if "magnit.ru" in link:
+                import re
+                prod_match = re.search(r'data-test-id="v-product-details-offer-name".*?>(.*?)<', html)
+                price_match = re.search(r'<span data-v-67b88f3b="">([\d.,]+)', html)
+                product = prod_match.group(1).strip() if prod_match else None
+                price = float(price_match.group(1).replace(",", ".")) if price_match else None
+                shop = "Магнит"
+                return product, price, shop
+            # TODO: Добавить другие магазины аналогично
+            return None, None, None
+    except Exception as e:
+        logger.error(f"Ошибка при парсинге {link}: {e}")
+        return None, None, None
+
+
+async def add_alert(user_id, link, product, shop, price, threshold):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""
+            INSERT INTO alerts(user_id, link, product, shop, price, threshold)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (user_id, link, product, shop, price, threshold))
+        await db.commit()
+
+
+async def get_user_alerts(user_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        cursor = await db.execute("SELECT id, link, product, shop, price, threshold FROM alerts WHERE user_id=?", (user_id,))
+        rows = await cursor.fetchall()
+        return rows
+
+
+async def delete_alert(user_id, alert_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, user_id))
+        await db.commit()
+
+
+# ---------- Хэндлеры ----------
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer(
-        "<b>Привет!</b>\nЯ могу следить за ценами на товары.\n\n"
-        "Доступные команды:\n"
-        "/search - добавить товар для отслеживания\n"
-        "/alerts - показать активные правила\n"
-        "/cancel - отменить правило"
-    )
+    await message.answer("Привет! Я бот мониторинга цен.\n\n"
+                         "Команды:\n"
+                         "/search - добавить правило\n"
+                         "/alerts - список активных правил")
+
 
 @dp.message(Command("search"))
 async def cmd_search(message: Message, state: FSMContext):
     await message.answer("Введите ссылку для отслеживания товара:")
-    await state.set_state(SearchStates.waiting_for_link)
+    await state.set_state(SearchStates.link)
 
-@dp.message(SearchStates.waiting_for_link)
+
+@dp.message(SearchStates.link)
 async def process_link(message: Message, state: FSMContext):
     await state.update_data(link=message.text)
-    await message.answer("Введите минимальную цену, при которой присылать уведомление:")
-    await state.set_state(SearchStates.waiting_for_threshold)
+    await message.answer("Введите минимальную цену для уведомления:")
+    await state.set_state(SearchStates.threshold)
 
-@dp.message(SearchStates.waiting_for_threshold)
+
+@dp.message(SearchStates.threshold)
 async def process_threshold(message: Message, state: FSMContext):
     data = await state.get_data()
-    link = data["link"]
+    link = data.get("link")
     try:
         threshold = float(message.text.replace(",", "."))
     except ValueError:
-        await message.answer("Некорректное значение цены, попробуйте снова:")
+        await message.answer("Введите корректное число!")
         return
 
-    # Парсим товар
-    product, price, shop = await parse_product(link)
-    if product is None:
+    product, price, shop = await get_price_and_product(link)
+    if product is None or price is None:
         await message.answer("Не удалось получить информацию о товаре.")
         await state.clear()
         return
 
-    # Сохраняем в БД
-    async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute(
-            "INSERT INTO alerts(user_id, link, shop, product, price, threshold) VALUES (?, ?, ?, ?, ?, ?)",
-            (message.from_user.id, link, shop, product, price, threshold)
-        )
-        await db.commit()
-
-    await message.answer(f"✅ Добавлено:\n<b>{product}</b>\nТекущая цена: {price} ₽\nПорог: {threshold} ₽")
+    await add_alert(message.from_user.id, link, product, shop, price, threshold)
+    await message.answer(f"Добавлено правило:\n{shop}\n{product}\nТекущая цена: {price} ₽\nПорог: {threshold} ₽")
     await state.clear()
 
-# --- Парсинг сайтов ---
-async def parse_product(url):
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(url)
-            if r.status_code != 200:
-                return None, None, None
-            html = r.text
-            soup = BeautifulSoup(html, "lxml")
-
-            if "magnit.ru" in url:
-                shop = "Магнит"
-                prod_tag = soup.select_one("span[data-test-id='v-product-details-offer-name']")
-                price_tag = soup.select_one("span[data-v-67b88f3b]")
-                product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace(" ", "").replace("₽","").replace(",",".")) if price_tag else None
-            elif "lenta.com" in url:
-                shop = "Лента"
-                prod_tag = soup.select_one("span[_ngcontent-ng-c2436889447]")
-                price_tag = soup.select_one("span.main-price.__accent")
-                product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().split()[0].replace(",",".")) if price_tag else None
-            elif "5ka.ru" in url:
-                shop = "Пятерочка"
-                prod_tag = soup.select_one("h1[itemprop='name']")
-                price_tag = soup.select_one("p[itemprop='price']")
-                product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace(",",".")) if price_tag else None
-            elif "bristol.ru" in url:
-                shop = "Бристоль"
-                prod_tag = soup.select_one("h1.product-page__title")
-                price_tag = soup.select_one("span.product-card__price-tag__price")
-                product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace(",",".")) if price_tag else None
-            elif "myspar.ru" in url:
-                shop = "Спар"
-                prod_tag = soup.select_one("h1.catalog-element__title")
-                price_tag = soup.select_one("span.js-item-price")
-                product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace(",",".")) if price_tag else None
-            elif "wildberries.ru" in url:
-                shop = "Wildberries"
-                prod_tag = soup.select_one("h1.productTitle--J2W7I")
-                price_tag = soup.select_one("ins.priceBlockFinalPrice--iToZR")
-                product = prod_tag.text.strip() if prod_tag else None
-                price = float(price_tag.text.strip().replace("\u00A0","").replace("₽","").replace(",",".")) if price_tag else None
-            else:
-                return None, None, None
-            return product, price, shop
-    except Exception as e:
-        logger.error(f"Ошибка при парсинге {url}: {e}")
-        return None, None, None
-
-# --- Inline меню для управления ---
-def generate_alerts_keyboard(alerts):
-    buttons = [
-        [InlineKeyboardButton(f"{a[3]} ({a[5]} ₽)", callback_data=f"del_{a[0]}")]
-        for a in alerts
-    ]
-    if buttons:
-        buttons.append([InlineKeyboardButton("Удалить все", callback_data="del_all")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @dp.message(Command("alerts"))
-async def show_alerts(message: Message):
-    async with aiosqlite.connect(DB_FILE) as db:
-        cursor = await db.execute("SELECT * FROM alerts WHERE user_id=?", (message.from_user.id,))
-        alerts = await cursor.fetchall()
-    if not alerts:
-        await message.answer("Нет активных правил")
+async def cmd_alerts(message: Message):
+    rows = await get_user_alerts(message.from_user.id)
+    if not rows:
+        await message.answer("У вас нет активных правил.")
         return
-    kb = generate_alerts_keyboard(alerts)
-    await message.answer("Активные правила:", reply_markup=kb)
 
-@dp.callback_query(F.data.startswith("del_"))
-async def delete_alert_callback(query: CallbackQuery):
-    data = query.data
-    async with aiosqlite.connect(DB_FILE) as db:
-        if data == "del_all":
-            await db.execute("DELETE FROM alerts WHERE user_id=?", (query.from_user.id,))
-            await db.commit()
-            await query.message.edit_text("Все правила удалены")
-        else:
-            alert_id = int(data.split("_")[1])
-            await db.execute("DELETE FROM alerts WHERE user_id=? AND id=?", (query.from_user.id, alert_id))
-            await db.commit()
-            await query.message.edit_text("Правило удалено")
-    await query.answer()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"❌ {r[2]} ({r[4]} ₽)", callback_data=f"del_{r[0]}")] for r in rows
+    ])
+    await message.answer("Ваши правила:", reply_markup=keyboard)
 
-# --- Фоновая проверка ---
+
+@dp.callback_query()
+async def process_delete(call):
+    if call.data.startswith("del_"):
+        alert_id = int(call.data.split("_")[1])
+        await delete_alert(call.from_user.id, alert_id)
+        await call.message.edit_text("Правило удалено")
+
+
+# ---------- Фоновая задача ----------
 async def monitor_alerts():
     while True:
         async with aiosqlite.connect(DB_FILE) as db:
-            cursor = await db.execute("SELECT * FROM alerts")
-            all_alerts = await cursor.fetchall()
-        for a in all_alerts:
-            alert_id, user_id, link, shop, product, price, threshold = a
-            new_product, new_price, _ = await parse_product(link)
-            if new_price is not None and new_price <= threshold:
-                try:
-                    await bot.send_message(
-                        user_id,
-                        f"🔥 Цена упала до {new_price} ₽!\n"
-                        f"🛍️ {product}\n"
-                        f"🔗 {link}"
-                    )
-                except Exception as e:
-                    logger.error(f"Не удалось отправить уведомление: {e}")
+            cursor = await db.execute("SELECT id, user_id, link, product, shop, threshold FROM alerts")
+            rows = await cursor.fetchall()
+            for row in rows:
+                alert_id, user_id, link, product, shop, threshold = row
+                prod, price, shop_name = await get_price_and_product(link)
+                if price is not None and price <= threshold:
+                    try:
+                        await bot.send_message(user_id,
+                            f"🔥 Цена упала до {price} ₽!\n🛍️ Название товара: {product}\n🔗 {link}")
+                    except Exception as e:
+                        logger.error(f"Ошибка отправки уведомления: {e}")
+                await asyncio.sleep(RATE_LIMIT_MS / 1000)
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-# --- Webhook для Render ---
+
+# ---------- Webhook ----------
 async def handle_webhook(request: web.Request):
     data = await request.json()
-    from aiogram.types import Update
     update = Update(**data)
-    await dp.process_update(update)
-    return web.Response()
+    await dp.feed_update(update)
+    return web.Response(text="OK")
 
-async def main():
+
+app = web.Application()
+app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+
+async def on_startup():
     await init_db()
+    await bot.set_webhook(WEBHOOK_URL)
+    logger.info(f"Webhook установлен: {WEBHOOK_URL}")
     asyncio.create_task(monitor_alerts())
+    logger.info("Фоновый мониторинг запущен")
 
-    app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000)))
-    await site.start()
-    logger.info("Бот запущен на Render!")
-    while True:
-        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(on_startup())
+    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
