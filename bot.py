@@ -250,7 +250,6 @@ async def on_shutdown(app):
 
 async def main():
     app = web.Application()
-    dp.include_router(dp)  # регистрируем все хендлеры
     app.router.add_post(WEBHOOK_PATH, dp.webhook_handler())
 
     app.on_startup.append(on_startup)
@@ -268,5 +267,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
