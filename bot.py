@@ -324,6 +324,7 @@ async def monitor_alerts():
 # ===========================
 async def main():
     await init_db()
+    await bot.delete_webhook(drop_pending_updates=True)  # 🔧 фикс конфликта webhook/polling
     asyncio.create_task(monitor_alerts())
     await dp.start_polling(bot)
 
