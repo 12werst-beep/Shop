@@ -3,7 +3,6 @@ import re
 import asyncio
 import logging
 from datetime import datetime
-from dateutil.parser import isoparse
 
 import aiosqlite
 import httpx
@@ -26,8 +25,8 @@ logger = logging.getLogger(__name__)
 # ---------- Конфигурация ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL", "https://shop-rm9r.onrender.com")
-POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "900"))
-RATE_LIMIT_MS = int(os.getenv("RATE_LIMIT_MS", "400"))
+POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", 900))
+RATE_LIMIT_MS = int(os.getenv("RATE_LIMIT_MS", 400))
 DB_PATH = "alerts.db"
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
@@ -94,26 +93,32 @@ async def fetch_price_and_product(url: str):
                 return None, None, None
             html = resp.text
 
+            # Магнит
             if "magnit.ru" in url:
                 shop = "Магнит"
                 product_match = re.search(r'product-details-offer__title.*?>(.*?)</span>', html)
                 price_match = re.search(r'(\d+[.,]?\d*)\s*₽', html)
+            # Лента
             elif "lenta.com" in url:
                 shop = "Лента"
                 product_match = re.search(r'product.*?>(.*?)</span>', html)
                 price_match = re.search(r'(\d+[.,]?\d*)\s*₽', html)
+            # Пятерочка
             elif "5ka.ru" in url:
                 shop = "Пятерочка"
                 product_match = re.search(r'<h1.*?>(.*?)</h1>', html)
                 price_match = re.search(r'content="(\d+[.,]?\d*)"', html)
+            # Бристоль
             elif "bristol.ru" in url:
                 shop = "Бристоль"
                 product_match = re.search(r'<h1.*?>(.*?)</h1>', html)
                 price_match = re.search(r'(\d+[.,]?\d*)\s*₽', html)
+            # Спар
             elif "myspar.ru" in url:
                 shop = "Спар"
                 product_match = re.search(r'<h1.*?>(.*?)</h1>', html)
                 price_match = re.search(r'(\d+[.,]?\d*)', html)
+            # Wildberries
             elif "wildberries.ru" in url:
                 shop = "Wildberries"
                 product_match = re.search(r'productTitle.*?>(.*?)</h1>', html)
@@ -124,7 +129,6 @@ async def fetch_price_and_product(url: str):
             product = product_match.group(1).strip() if product_match else None
             price_str = price_match.group(1).replace(" ", "").replace(",", ".") if price_match else None
             price = float(price_str) if price_str else None
-
             return shop, product, price
     except Exception as e:
         logger.error(f"Ошибка при парсинге {url}: {e}")
@@ -225,7 +229,7 @@ async def cb_delete_alert(callback: CallbackQuery):
 async def handle_webhook(request: web.Request):
     data = await request.json()
     update = Update(**data)
-    await dp.process_update(update)  # <--- рабочий метод для aiogram v3+
+    await dp.feed_update(bot, update)  # ✅ рабочий метод для aiogram v3+
     return web.Response(text="OK")
 
 # ---------- Main ----------
