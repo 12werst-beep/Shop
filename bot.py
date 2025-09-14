@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ----------------- Переменные окружения -----------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # токен бота
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # токен бота
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # внешний URL Render
 PORT = int(os.environ.get("PORT", 8000))  # порт для web-приложения
 
@@ -73,3 +73,4 @@ def main():
 if __name__ == "__main__":
     logger.info("Бот запущен на Render!")
     main()
+
