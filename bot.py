@@ -61,6 +61,7 @@ async def init_db():
                 shop TEXT,
                 product TEXT,
                 price REAL,
+                old_price REAL,
                 threshold REAL
             )
         """)
@@ -70,26 +71,27 @@ async def init_db():
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
-        "<b>Привет!</b>\nЯ могу следить за ценами на товары в <i>Магните</i>.\n\n"
+        "<b>Привет!</b>\nЯ могу следить за ценами на товары через <i>Едадил</i>.\n\n"
         "Доступные команды:\n"
         "/search - добавить товар для отслеживания\n"
         "/alerts - показать активные правила\n"
-        "/cancel - отменить правило"
+        "/cancel - отменить правило\n\n"
+        "📌 Отправьте ссылку с сайта: <code>https://edadeal.ru/...</code>"
     )
 
 @dp.message(Command("search"))
 async def cmd_search(message: Message, state: FSMContext):
     await message.answer(
-        "📩 Отправьте ссылку на товар в <b>Магните</b>:\n"
-        "Пример: <code>https://magnit.ru/promo-product/2158136-ikra-lososevaia-zernistaia-90-g?shopCode=743774</code>"
+        "📩 Отправьте ссылку на товар с <b>Едадила</b>:\n"
+        "Пример: <code>https://edadeal.ru/joshkar-ola-41/metaoffers/349f451a-6006-52aa-9f96-009336c51949?baseOfferUuid=5a3c0b9e-4476-56b0-a4e2-75630f89a7e0</code>"
     )
     await state.set_state(SearchStates.waiting_for_link)
 
 @dp.message(SearchStates.waiting_for_link)
 async def process_link(message: Message, state: FSMContext):
     link = message.text.strip()
-    if "magnit.ru" not in link:
-        await message.answer("❌ Ссылка должна быть с сайта magnit.ru. Попробуйте снова:")
+    if "edadeal.ru" not in link:
+        await message.answer("❌ Ссылка должна быть с сайта edadeal.ru. Попробуйте снова:")
         return
 
     await state.update_data(link=link)
@@ -107,7 +109,7 @@ async def process_threshold(message: Message, state: FSMContext):
         return
 
     # Парсим товар
-    product, price, shop = await parse_product(link)
+    product, price, old_price, shop = await parse_product(link)
     if product is None:
         await message.answer("❌ Не удалось получить информацию о товаре. Проверьте ссылку и попробуйте ещё раз.")
         await state.clear()
@@ -116,74 +118,67 @@ async def process_threshold(message: Message, state: FSMContext):
     # Сохраняем в БД
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute(
-            "INSERT INTO alerts(user_id, link, shop, product, price, threshold) VALUES (?, ?, ?, ?, ?, ?)",
-            (message.from_user.id, link, shop, product, price, threshold)
+            "INSERT INTO alerts(user_id, link, shop, product, price, old_price, threshold) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (message.from_user.id, link, shop, product, price, old_price, threshold)
         )
         await db.commit()
 
-    await message.answer(f"✅ Добавлено:\n<b>{product}</b>\nТекущая цена: {price} ₽\nПорог: {threshold} ₽")
+    await message.answer(
+        f"✅ Добавлено:\n"
+        f"<b>{product}</b>\n"
+        f"Текущая цена: <b>{price} ₽</b>\n"
+        f"Старая цена: {old_price} ₽\n"
+        f"Магазин: {shop}\n"
+        f"Порог: {threshold} ₽"
+    )
     await state.clear()
 
-# --- Парсинг Магнита ---
+# --- Парсинг Edadeal.ru ---
 async def parse_product(url):
     try:
         await asyncio.sleep(1)  # Задержка для вежливости
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
         }
 
         async with httpx.AsyncClient(timeout=15, headers=headers) as client:
             r = await client.get(url)
             if r.status_code != 200:
                 logger.error(f"HTTP {r.status_code} при запросе к {url}")
-                return None, None, None
+                return None, None, None, None
 
             html = r.text
             soup = BeautifulSoup(html, "html.parser")
 
-            if "magnit.ru" in url:
-                shop = "Магнит"
+            # --- Извлекаем данные из Edadeal ---
+            # Название товара
+            product_tag = soup.select_one("h1.product-title")
+            product = product_tag.text.strip() if product_tag else None
 
-                # Попробуем сначала промо-товар
-                prod_tag = soup.select_one("span[data-test-id='v-product-details-offer-name']")
-                price_tag = soup.select_one("span[data-v-67b88f3b]")
+            # Текущая цена
+            price_tag = soup.select_one("div.price-value")
+            price_text = price_tag.text.strip().replace(" ", "").replace("₽", "") if price_tag else ""
+            price = float(price_text) if price_text else None
 
-                # Если не нашли — попробуем обычный товар
-                if not prod_tag or not price_tag:
-                    prod_tag = soup.select_one("h1.product-title")
-                    price_tag = soup.select_one("span.price-value")
+            # Старая цена
+            old_price_tag = soup.select_one("div.price-old")
+            old_price_text = old_price_tag.text.strip().replace(" ", "").replace("₽", "") if old_price_tag else ""
+            old_price = float(old_price_text) if old_price_text else None
 
-                product = prod_tag.text.strip() if prod_tag else None
-                price_text = price_tag.text.strip() if price_tag else ""
+            # Магазин
+            shop_tag = soup.select_one("span.store-name")
+            shop = shop_tag.text.strip() if shop_tag else "Неизвестный магазин"
 
-                # Чистим цену: убираем неразрывные пробелы, ₽, запятые
-                price_cleaned = price_text.replace(" ", "").replace("₽", "").replace(",", ".")
-                price = float(price_cleaned) if price_cleaned else None
+            if not product or price is None:
+                logger.warning(f"Не удалось извлечь продукт или цену с {url}. Продукт: {product}, Цена: {price}")
+                return None, None, None, None
 
-                if not product or price is None:
-                    logger.warning(f"Не удалось извлечь продукт или цену с {url}. Продукт: {product}, Цена: {price}")
-                    return None, None, None
-
-                return product, price, "Магнит"  # ✅ ТУТ БЫЛ ОШИБОЧНЫЙ ОТСТУП — ИСПРАВЛЕНО!
-
-            else:
-                logger.warning(f"Неизвестный домен: {url}")
-                return None, None, None
+            return product, price, old_price, shop
 
     except Exception as e:
         logger.error(f"Ошибка при парсинге {url}: {e}", exc_info=True)
-        return None, None, None
+        return None, None, None, None
 
 # --- Inline меню для управления ---
 def generate_alerts_keyboard(alerts):
@@ -228,14 +223,16 @@ async def monitor_alerts():
             cursor = await db.execute("SELECT * FROM alerts")
             all_alerts = await cursor.fetchall()
         for a in all_alerts:
-            alert_id, user_id, link, shop, product, price, threshold = a
-            new_product, new_price, _ = await parse_product(link)
+            alert_id, user_id, link, shop, product, price, old_price, threshold = a
+            new_product, new_price, new_old_price, new_shop = await parse_product(link)
             if new_price is not None and new_price <= threshold:
                 try:
                     await bot.send_message(
                         user_id,
                         f"🔥 Цена упала до {new_price} ₽!\n"
-                        f"🛍️ {product}\n"
+                        f"🛍️ {new_product}\n"
+                        f"💰 Старая цена: {new_old_price} ₽\n"
+                        f"🏪 {new_shop}\n"
                         f"🔗 {link}"
                     )
                 except Exception as e:
@@ -270,5 +267,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
