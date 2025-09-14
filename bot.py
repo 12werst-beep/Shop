@@ -152,15 +152,14 @@ async def parse_product(url):
             html = r.text
             soup = BeautifulSoup(html, "html.parser")
 
-            # --- Магнит: обрабатываем оба типа URL ---
             if "magnit.ru" in url:
                 shop = "Магнит"
 
-                # 🟢 ПРОМО-ТОВАР (например: /promo-product/...)
+                # Попробуем сначала промо-товар
                 prod_tag = soup.select_one("span[data-test-id='v-product-details-offer-name']")
                 price_tag = soup.select_one("span[data-v-67b88f3b]")
 
-                # 🔵 ОБЫЧНЫЙ ТОВАР (например: /product/...)
+                # Если не нашли — попробуем обычный товар
                 if not prod_tag or not price_tag:
                     prod_tag = soup.select_one("h1.product-title")
                     price_tag = soup.select_one("span.price-value")
@@ -168,7 +167,7 @@ async def parse_product(url):
                 product = prod_tag.text.strip() if prod_tag else None
                 price_text = price_tag.text.strip() if price_tag else ""
 
-                # Чистим цену: убираем пробелы, ₽, запятые
+                # Чистим цену: убираем неразрывные пробелы, ₽, запятые
                 price_cleaned = price_text.replace(" ", "").replace("₽", "").replace(",", ".")
                 price = float(price_cleaned) if price_cleaned else None
 
@@ -176,17 +175,11 @@ async def parse_product(url):
                     logger.warning(f"Не удалось извлечь продукт или цену с {url}. Продукт: {product}, Цена: {price}")
                     return None, None, None
 
-                return product, price, shop
+                return product, price, "Магнит"  # ✅ ТУТ БЫЛ ОШИБОЧНЫЙ ОТСТУП — ИСПРАВЛЕНО!
 
             else:
                 logger.warning(f"Неизвестный домен: {url}")
                 return None, None, None
-
-    except Exception as e:
-        logger.error(f"Ошибка при парсинге {url}: {e}", exc_info=True)
-        return None, None, None
-
-            return product, price, "Магнит"
 
     except Exception as e:
         logger.error(f"Ошибка при парсинге {url}: {e}", exc_info=True)
@@ -277,4 +270,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
