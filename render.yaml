@@ -1,14 +1,17 @@
 services:
   - type: web
-    name: price-monitor-bot
+    name: shop-alerts-bot
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python bot.py"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      - key: RENDER_SERVICE_URL
+        value: https://shop-rm9r.onrender.com
       - key: POLL_INTERVAL_SECONDS
         value: "900"
       - key: RATE_LIMIT_MS
         value: "400"
+
