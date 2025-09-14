@@ -35,15 +35,19 @@ async def echo_message(message: Message):
     await message.answer(f"Вы написали: {message.text}")
 
 # ----------------- Webhook handler -----------------
+from aiogram.types import Update
+
 async def handle_webhook(request: web.Request):
-    """Обработка POST-запросов от Telegram"""
     try:
         data = await request.json()
-    except Exception:
+        update = Update(**data)  # преобразуем dict в объект Update
+    except Exception as e:
+        logger.error(f"Ошибка парсинга update: {e}")
         return web.Response(status=400)
-    
-    await dp.feed_update(data)
+
+    await dp.feed_update(update)  # теперь метод получит правильный объект
     return web.Response(status=200)
+
 
 # ----------------- Запуск веб-приложения -----------------
 async def on_startup():
@@ -73,4 +77,5 @@ def main():
 if __name__ == "__main__":
     logger.info("Бот запущен на Render!")
     main()
+
 
