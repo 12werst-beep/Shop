@@ -1,5 +1,4 @@
 import os
-import re
 import asyncio
 import logging
 from datetime import datetime
@@ -9,6 +8,7 @@ import aiosqlite
 import httpx
 from aiogram import Bot, Dispatcher, F
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties  # <--- ЭТО
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -268,4 +268,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
