@@ -1,47 +1,53 @@
 import os
 import asyncio
 import logging
-from datetime import datetime
-
-import aiosqlite
-import httpx
 from aiohttp import web
+import httpx
+from bs4 import BeautifulSoup
 
-from aiogram import Bot, Dispatcher
-from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from aiogram.filters.state import State, StatesGroup
+from aiogram import F, Command  # ← ИСПРАВЛЕНО: добавлен Command!
+from aiogram.client.bot import Bot, DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters.command import Command
+from aiogram import Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+import aiosqlite
 
-# ========== Настройки логирования ==========
-logging.basicConfig(level=logging.INFO)
+# Логирование
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 logger = logging.getLogger(__name__)
 
-# ========== Константы ==========
+# Настройки
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("❌ TELEGRAM_BOT_TOKEN не установлен в переменных окружения!")
-
-POLL_INTERVAL_SECONDS = 900   # Проверять каждые 15 минут
-RATE_LIMIT_MS = 400           # Задержка между запросами к магазинам (0.4s)
+RENDER_SERVICE_URL = os.getenv("RENDER_SERVICE_URL")  # Например: https://shop-rm9r.onrender.com
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{WEBHOOK_PATH}"  # ✅ КРИТИЧЕСКИ ВАЖНО!
+WEBHOOK_URL = f"{RENDER_SERVICE_URL}{WEBHOOK_PATH}"
 
-# ========== Инициализация ==========
-bot = Bot(token=BOT_TOKEN)
+POLL_INTERVAL_SECONDS = 900  # 15 минут
+RATE_LIMIT_MS = 400
+
+# --- Инициализация бота ---
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
+# --- FSM ---
+class SearchStates(StatesGroup):
+    waiting_for_link = State()
+    waiting_for_threshold = State()
+
+# --- База данных ---
 DB_FILE = "alerts.db"
 
-# ========== FSM ==========
-class SearchStates(StatesGroup):
-    link = State()
-    threshold = State()
-
-# ========== База данных ==========
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
@@ -56,211 +62,274 @@ async def init_db():
             )
         """)
         await db.commit()
-        logger.info("✅ База данных инициализирована")
 
-# ========== Парсинг цены и названия товара ==========
-async def get_price_and_product(link: str):
-    """Парсит цену и название товара с сайта magnit.ru"""
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(link, timeout=15)
-            if resp.status_code != 200:
-                logger.warning(f"HTTP {resp.status_code} при запросе {link}")
-                return None, None, None
-
-            html = resp.text
-
-            if "magnit.ru" in link:
-                import re
-                # Название товара
-                prod_match = re.search(r'data-test-id="v-product-details-offer-name".*?>(.*?)<', html)
-                # Цена (формат: 123,45 → 123.45)
-                price_match = re.search(r'<span data-v-67b88f3b="">([\d.,]+)', html)
-                
-                product = prod_match.group(1).strip() if prod_match else None
-                price_str = price_match.group(1).replace(",", ".") if price_match else None
-                price = float(price_str) if price_str else None
-                shop = "Магнит"
-                return product, price, shop
-
-            # TODO: Добавьте другие магазины здесь
-            return None, None, None
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка парсинга {link}: {e}")
-        return None, None, None
-
-# ========== CRUD операции с базой ==========
-async def add_alert(user_id, link, product, shop, price, threshold):
-    async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute("""
-            INSERT INTO alerts(user_id, link, product, shop, price, threshold)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (user_id, link, product, shop, price, threshold))
-        await db.commit()
-
-async def get_user_alerts(user_id):
-    async with aiosqlite.connect(DB_FILE) as db:
-        cursor = await db.execute("SELECT id, link, product, shop, price, threshold FROM alerts WHERE user_id=?", (user_id,))
-        rows = await cursor.fetchall()
-        return rows
-
-async def delete_alert(user_id, alert_id):
-    async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute("DELETE FROM alerts WHERE id=? AND user_id=?", (alert_id, user_id))
-        await db.commit()
-
-# ========== Хэндлеры бота ==========
+# --- Хэндлеры ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.answer(
-        "Привет! Я бот мониторинга цен.\n\n"
-        "Команды:\n"
-        "/search - добавить правило\n"
-        "/alerts - список активных правил"
+        "<b>Привет!</b>\nЯ могу следить за ценами на товары.\n\n"
+        "Доступные команды:\n"
+        "/search - добавить товар для отслеживания\n"
+        "/alerts - показать активные правила\n"
+        "/cancel - отменить текущее действие"
     )
 
 @dp.message(Command("search"))
 async def cmd_search(message: Message, state: FSMContext):
-    await message.answer("Введите ссылку на товар (например, с magnit.ru):")
-    await state.set_state(SearchStates.link)
+    await message.answer("Введите ссылку для отслеживания товара:")
+    await state.set_state(SearchStates.waiting_for_link)
 
-@dp.message(SearchStates.link)
+@dp.message(SearchStates.waiting_for_link)
 async def process_link(message: Message, state: FSMContext):
     await state.update_data(link=message.text)
-    await message.answer("Введите минимальную цену для уведомления (например, 199.90):")
-    await state.set_state(SearchStates.threshold)
+    await message.answer("Введите минимальную цену, при которой присылать уведомление:")
+    await state.set_state(SearchStates.waiting_for_threshold)
 
-@dp.message(SearchStates.threshold)
+@dp.message(SearchStates.waiting_for_threshold)
 async def process_threshold(message: Message, state: FSMContext):
     data = await state.get_data()
-    link = data.get("link")
+    link = data["link"]
     try:
         threshold = float(message.text.replace(",", "."))
     except ValueError:
-        await message.answer("❌ Пожалуйста, введите корректное число (например, 199.90)")
+        await message.answer("Некорректное значение цены, попробуйте снова:")
         return
 
-    product, price, shop = await get_price_and_product(link)
-    if product is None or price is None:
-        await message.answer("❌ Не удалось получить информацию о товаре. Проверьте ссылку и попробуйте снова.")
+    # Парсим товар
+    product, price, shop = await parse_product(link)
+    if product is None:
+        await message.answer("Не удалось получить информацию о товаре. Проверьте ссылку.")
         await state.clear()
         return
 
-    await add_alert(message.from_user.id, link, product, shop, price, threshold)
-    await message.answer(
-        f"✅ Правило добавлено!\n\n"
-        f"🛍️ Товар: {product}\n"
-        f"💰 Текущая цена: {price} ₽\n"
-        f"📉 Порог уведомления: {threshold} ₽\n"
-        f"🔗 Ссылка: {link}"
-    )
+    # Сохраняем в БД
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute(
+            "INSERT INTO alerts(user_id, link, shop, product, price, threshold) VALUES (?, ?, ?, ?, ?, ?)",
+            (message.from_user.id, link, shop, product, price, threshold)
+        )
+        await db.commit()
+
+    await message.answer(f"✅ Добавлено:\n<b>{product}</b>\nТекущая цена: {price} ₽\nПорог: {threshold} ₽")
     await state.clear()
 
-@dp.message(Command("alerts"))
-async def cmd_alerts(message: Message):
-    rows = await get_user_alerts(message.from_user.id)
-    if not rows:
-        await message.answer("У вас нет активных правил. Используйте /search, чтобы добавить.")
-        return
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"❌ {r[2]} ({r[4]} ₽)", callback_data=f"del_{r[0]}")] for r in rows
-    ])
-    await message.answer("Ваши активные правила:", reply_markup=keyboard)
-
-@dp.callback_query()
-async def process_delete(call):
-    if call.data.startswith("del_"):
-        alert_id = int(call.data.split("_")[1])
-        await delete_alert(call.from_user.id, alert_id)
-        await call.message.edit_text("🗑️ Правило удалено.")
-
-# ========== Фоновый мониторинг ==========
-async def check_alert(alert_id, user_id, link, product, shop, threshold):
-    """Проверяет один алерт и отправляет уведомление, если цена упала"""
+# --- Парсинг сайтов ---
+async def parse_product(url):
     try:
-        product_new, price_new, shop_new = await get_price_and_product(link)
-        if price_new is None:
-            return  # Пропускаем, если не смогли спарсить
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(url)
+            if r.status_code != 200:
+                return None, None, None
+            html = r.text
+            soup = BeautifulSoup(html, "lxml")
 
-        if price_new <= threshold and abs(price_new - threshold) > 0.01:  # Избегаем дублей
-            try:
-                await bot.send_message(
-                    user_id,
-                    f"🔥 ЦЕНА УПАЛА! 🔥\n\n"
-                    f"🛍️ {product_new}\n"
-                    f"💰 Текущая цена: {price_new} ₽\n"
-                    f"📉 Ваш порог: {threshold} ₽\n"
-                    f"🔗 Перейти: {link}"
-                )
-                logger.info(f"✅ Уведомление отправлено пользователю {user_id} по {link}")
-            except Exception as e:
-                logger.error(f"❌ Не удалось отправить уведомление пользователю {user_id}: {e}")
+            def clean_price(text):
+                # Удаляем все лишние символы и нормализуем
+                return text.strip().replace("₽", "").replace("\u00A0", "").replace("\u202F", "").replace(",", ".").replace(" ", "")
+
+            if "magnit.ru" in url:
+                shop = "Магнит"
+                prod_tag = soup.select_one("span[data-test-id='v-product-details-offer-name']")
+                price_tag = soup.select_one("span[data-v-67b88f3b]")
+                product = prod_tag.text.strip() if prod_tag else None
+                price_str = clean_price(price_tag.text) if price_tag else None
+                price = float(price_str) if price_str else None
+
+            elif "lenta.com" in url:
+                shop = "Лента"
+                prod_tag = soup.select_one("span[_ngcontent-ng-c2436889447]")
+                price_tag = soup.select_one("span.main-price.__accent")
+                product = prod_tag.text.strip() if prod_tag else None
+                price_str = clean_price(price_tag.text.split()[0]) if price_tag else None
+                price = float(price_str) if price_str else None
+
+            elif "5ka.ru" in url:
+                shop = "Пятерочка"
+                prod_tag = soup.select_one("h1[itemprop='name']")
+                price_tag = soup.select_one("p[itemprop='price']")
+                product = prod_tag.text.strip() if prod_tag else None
+                price_str = clean_price(price_tag.text) if price_tag else None
+                price = float(price_str) if price_str else None
+
+            elif "bristol.ru" in url:
+                shop = "Бристоль"
+                prod_tag = soup.select_one("h1.product-page__title")
+                price_tag = soup.select_one("span.product-card__price-tag__price")
+                product = prod_tag.text.strip() if prod_tag else None
+                price_str = clean_price(price_tag.text) if price_tag else None
+                price = float(price_str) if price_str else None
+
+            elif "myspar.ru" in url:
+                shop = "Спар"
+                prod_tag = soup.select_one("h1.catalog-element__title")
+                price_tag = soup.select_one("span.js-item-price")
+                product = prod_tag.text.strip() if prod_tag else None
+                price_str = clean_price(price_tag.text) if price_tag else None
+                price = float(price_str) if price_str else None
+
+            elif "wildberries.ru" in url:
+                shop = "Wildberries"
+                prod_tag = soup.select_one("h1.productTitle--J2W7I")
+                price_tag = soup.select_one("ins.priceBlockFinalPrice--iToZR")
+                product = prod_tag.text.strip() if prod_tag else None
+                price_str = clean_price(price_tag.text) if price_tag else None
+                price = float(price_str) if price_str else None
+
+            else:
+                return None, None, None
+
+            return product, price, shop
+
     except Exception as e:
-        logger.error(f"❌ Ошибка при проверке алерта {alert_id}: {e}")
+        logger.error(f"Ошибка при парсинге {url}: {e}")
+        return None, None, None
 
+# --- Inline меню для управления ---
+def generate_alerts_keyboard(alerts):
+    buttons = [
+        [InlineKeyboardButton(f"{a[3]} ({a[5]} ₽)", callback_data=f"del_{a[0]}")]
+        for a in alerts
+    ]
+    if buttons:
+        buttons.append([InlineKeyboardButton("Удалить все", callback_data="del_all")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+@dp.message(Command("alerts"))
+async def show_alerts(message: Message):
+    async with aiosqlite.connect(DB_FILE) as db:
+        cursor = await db.execute("SELECT * FROM alerts WHERE user_id=?", (message.from_user.id,))
+        alerts = await cursor.fetchall()
+    if not alerts:
+        await message.answer("Нет активных правил")
+        return
+    kb = generate_alerts_keyboard(alerts)
+    await message.answer("Активные правила:", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("del_"))
+async def delete_alert_callback(query: CallbackQuery):
+    data = query.data
+    async with aiosqlite.connect(DB_FILE) as db:
+        if data == "del_all":
+            await db.execute("DELETE FROM alerts WHERE user_id=?", (query.from_user.id,))
+            await db.commit()
+            await query.message.edit_text("Все правила удалены")
+        else:
+            alert_id = int(data.split("_")[1])
+            await db.execute("DELETE FROM alerts WHERE user_id=? AND id=?", (query.from_user.id, alert_id))
+            await db.commit()
+            await query.message.edit_text("Правило удалено")
+    await query.answer()
+
+# --- Фоновая проверка (параллельная, с ограничением) ---
 async def monitor_alerts():
-    """Фоновая задача: регулярно проверяет все алерты с задержкой между запросами"""
     while True:
         try:
             async with aiosqlite.connect(DB_FILE) as db:
-                cursor = await db.execute("""
-                    SELECT id, user_id, link, product, shop, threshold 
-                    FROM alerts
-                """)
-                rows = await cursor.fetchall()
+                cursor = await db.execute("SELECT * FROM alerts")
+                all_alerts = await cursor.fetchall()
 
-            tasks = []
-            for row in rows:
-                task = asyncio.create_task(check_alert(*row))
-                tasks.append(task)
+            if not all_alerts:
+                logger.info("Нет активных алертов для проверки.")
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                continue
 
-            # Выполняем задачи с интервалом RATE_LIMIT_MS
-            for i, task in enumerate(tasks):
-                await task
-                if i < len(tasks) - 1:  # Не ждём после последнего
-                    await asyncio.sleep(RATE_LIMIT_MS / 1000)
+            # Ограничиваем одновременные запросы до 5
+            semaphore = asyncio.Semaphore(5)
+
+            async def check_single_alert(alert):
+                async with semaphore:
+                    alert_id, user_id, link, shop, product, price, threshold = alert
+                    try:
+                        new_product, new_price, _ = await parse_product(link)
+                        if new_price is not None and new_price <= threshold:
+                            try:
+                                await bot.send_message(
+                                    user_id,
+                                    f"🔥 Цена упала до {new_price} ₽!\n"
+                                    f"🛍️ {product}\n"
+                                    f"🔗 {link}"
+                                )
+                                logger.info(f"Уведомление отправлено пользователю {user_id} по {link}")
+                            except Exception as e:
+                                logger.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
+                    except Exception as e:
+                        logger.error(f"Ошибка при проверке {link}: {e}")
+
+            tasks = [check_single_alert(a) for a in all_alerts]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Логируем ошибки (если есть)
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Ошибка в задаче {all_alerts[i][0]}: {result}")
 
         except Exception as e:
-            logger.error(f"❌ Ошибка в фоновом мониторинге: {e}")
+            logger.error(f"Критическая ошибка в мониторинге: {e}")
 
-        # Ждём следующего цикла
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-# ========== Запуск приложения ==========
-async def on_startup():
-    await init_db()
-    await bot.set_webhook(WEBHOOK_URL)
-    logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
-    asyncio.create_task(monitor_alerts())
-    logger.info("✅ Фоновый мониторинг запущен")
-
+# --- Обработчик завершения ---
+@dp.shutdown()
 async def on_shutdown():
     await bot.session.close()
-    logger.info("🛑 Бот завершил работу")
+    logger.info("Бот завершил работу.")
+
+# --- Главная функция ---
+async def main():
+    # Проверка обязательных переменных окружения
+    if not BOT_TOKEN:
+        logger.critical("TELEGRAM_BOT_TOKEN не задан! Установите его в настройках Render.com.")
+        raise SystemExit(1)
+    if not RENDER_SERVICE_URL:
+        logger.critical("RENDER_SERVICE_URL не задан! Убедитесь, что он указан в формате https://your-app.onrender.com")
+        raise SystemExit(1)
+
+    # Инициализация БД
+    await init_db()
+
+    # Установка вебхука
+    try:
+        await bot.set_webhook(
+            url=WEBHOOK_URL,
+            drop_pending_updates=True,
+            allowed_updates=dp.resolve_used_update_types()
+        )
+        logger.info(f"Webhook установлен: {WEBHOOK_URL}")
+    except Exception as e:
+        logger.error(f"Не удалось установить вебхук: {e}")
+        raise SystemExit(1)
+
+    # Запуск фонового мониторинга
+    asyncio.create_task(monitor_alerts())
+
+    # Создание веб-приложения
+    app = web.Application()
+
+    # Регистрация обработчика вебхука (aiogram v3)
+    handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    handler.register(app, path=WEBHOOK_PATH)
+
+    # Health-check для Render.com (обязательно!)
+    @app.router.get("/")
+    async def health_check(request):
+        return web.Response(text="OK", content_type="text/plain")
+
+    # Запуск сервера
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 10000)))
+    await site.start()
+
+    logger.info("Бот запущен на Render.com!")
+
+    # Поддерживаем процесс живым
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    # Запускаем инициализацию (асинхронную)
-    asyncio.run(on_startup())
-
-    # Настраиваем веб-сервер
-    app = web.Application()
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, WEBHOOK_PATH)
-    setup_application(app, dp, bot=bot)
-
-    # ДОБАВЛЕНО: health-check endpoint для Render
-    app.router.add_get('/', lambda r: web.Response(text="OK"))
-
-    # Запускаем сервер
     try:
-        web.run_app(
-            app,
-            host="0.0.0.0",
-            port=int(os.environ.get("PORT", 10000))
-        )
+        asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("🛑 Сервер остановлен вручную")
-    finally:
-        loop = asyncio.get_running_loop()
-        loop.create_task(on_shutdown())
+        logger.info("Бот остановлен вручную.")
+    except Exception as e:
+        logger.critical(f"Фатальная ошибка: {e}")
