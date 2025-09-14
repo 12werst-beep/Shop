@@ -10,3 +10,4 @@ services:
         fromEnv: TELEGRAM_BOT_TOKEN
       - key: RENDER_SERVICE_URL
         fromEnv: RENDER_SERVICE_URL
+
