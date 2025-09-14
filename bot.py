@@ -127,6 +127,8 @@ async def process_threshold(message: Message, state: FSMContext):
 # --- Парсинг Магнита ---
 async def parse_product(url):
     try:
+        await asyncio.sleep(1)  # Задержка для вежливости
+
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -150,17 +152,39 @@ async def parse_product(url):
             html = r.text
             soup = BeautifulSoup(html, "html.parser")
 
-            # --- Магнит ---
-            prod_tag = soup.select_one("span[data-test-id='v-product-details-offer-name']")
-            price_tag = soup.select_one("span[data-v-67b88f3b]")
+            # --- Магнит: обрабатываем оба типа URL ---
+            if "magnit.ru" in url:
+                shop = "Магнит"
 
-            product = prod_tag.text.strip() if prod_tag else None
-            price_text = price_tag.text.strip() if price_tag else ""
-            price = float(price_text.replace(" ", "").replace("₽", "").replace(",", ".")) if price_text else None
+                # 🟢 ПРОМО-ТОВАР (например: /promo-product/...)
+                prod_tag = soup.select_one("span[data-test-id='v-product-details-offer-name']")
+                price_tag = soup.select_one("span[data-v-67b88f3b]")
 
-            if not product or price is None:
-                logger.warning(f"Не удалось извлечь продукт или цену с {url}. Продукт: {product}, Цена: {price}")
+                # 🔵 ОБЫЧНЫЙ ТОВАР (например: /product/...)
+                if not prod_tag or not price_tag:
+                    prod_tag = soup.select_one("h1.product-title")
+                    price_tag = soup.select_one("span.price-value")
+
+                product = prod_tag.text.strip() if prod_tag else None
+                price_text = price_tag.text.strip() if price_tag else ""
+
+                # Чистим цену: убираем пробелы, ₽, запятые
+                price_cleaned = price_text.replace(" ", "").replace("₽", "").replace(",", ".")
+                price = float(price_cleaned) if price_cleaned else None
+
+                if not product or price is None:
+                    logger.warning(f"Не удалось извлечь продукт или цену с {url}. Продукт: {product}, Цена: {price}")
+                    return None, None, None
+
+                return product, price, shop
+
+            else:
+                logger.warning(f"Неизвестный домен: {url}")
                 return None, None, None
+
+    except Exception as e:
+        logger.error(f"Ошибка при парсинге {url}: {e}", exc_info=True)
+        return None, None, None
 
             return product, price, "Магнит"
 
@@ -253,3 +277,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
