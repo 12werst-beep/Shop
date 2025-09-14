@@ -13,7 +13,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from aiohttp import web
 
 # ---------- Логирование ----------
@@ -224,10 +224,12 @@ async def cb_delete_alert(callback: CallbackQuery):
 
 # ---------- Webhook ----------
 async def handle_webhook(request: web.Request):
-    update = await request.json()
+    data = await request.json()
+    update = Update(**data)
     await dp.feed_update(update)
     return web.Response(text="OK")
 
+# ---------- Main ----------
 async def main():
     await init_db()
     asyncio.create_task(monitor_alerts())
