@@ -1,17 +1,13 @@
 services:
   - type: web
-    name: shop-alerts-bot
-    env: python
-    plan: free
+    name: your-bot-name
+    runtime: python
+    pythonVersion: 3.12  # ← ВАЖНО!
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        sync: false
+        fromEnv: TELEGRAM_BOT_TOKEN
       - key: RENDER_SERVICE_URL
-        value: https://shop-rm9r.onrender.com
-      - key: POLL_INTERVAL_SECONDS
-        value: "900"
-      - key: RATE_LIMIT_MS
-        value: "400"
+        fromEnv: RENDER_SERVICE_URL
 
